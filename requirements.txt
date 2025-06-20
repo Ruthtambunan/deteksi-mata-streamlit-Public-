@@ -1,8 +1,8 @@
 streamlit==1.25.0
-numpy
-Pillow
-fpdf
-yagmail
-pandas
-tensorflow==2.14.0
-streamlit-option-menu
+numpy==1.23.5
+Pillow==9.5.0
+fpdf==1.7.2
+yagmail==0.15.293
+pandas==1.5.3
+tflite-runtime==2.5.0
+streamlit-option-menu==0.3.6
