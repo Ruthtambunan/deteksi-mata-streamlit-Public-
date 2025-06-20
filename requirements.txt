@@ -1,8 +1,8 @@
-streamlit
-tensorflow
-pillow
-numpy
-fpdf
-yagmail
-pandas
-gdown
+streamlit==1.25.0
+tensorflow-cpu==2.11.0
+pillow==9.5.0
+numpy==1.23.5
+fpdf==1.7.2
+yagmail==0.15.293
+pandas==1.5.3
+gdown==4.7.1
