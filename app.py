@@ -1,186 +1,152 @@
 import streamlit as st
 import numpy as np
-import pickle
-from PIL import Image
-import time
-from fpdf import FPDF
-import yagmail
-import os
 import pandas as pd
-from datetime import datetime
+import tensorflow as tf
+from PIL import Image
+import datetime
+from fpdf import FPDF
 import base64
-import tflite_runtime.interpreter as tflite
+import yagmail
 from streamlit_option_menu import option_menu
+import os
 
-# === KONFIGURASI HALAMAN === #
-st.set_page_config(page_title="Deteksi Penyakit Mata", layout="centered", page_icon="👁️")
-st.markdown("""
-    <style>
-        .stApp {background: linear-gradient(to bottom right, #e0f7fa, #fce4ec);}
-        .block-container {padding-top: 2rem; padding-bottom: 2rem;}
-        .sidebar .sidebar-content {background-color: #bbdefb;}
-    </style>
-""", unsafe_allow_html=True)
-
-# === LOAD MODEL TFLITE === #
+# Fungsi memuat model TFLite
 @st.cache_resource
 def load_model():
-    interpreter = tflite.Interpreter(model_path="model/model.tflite")
+    interpreter = tf.lite.Interpreter(model_path="model/model.tflite")
     interpreter.allocate_tensors()
     return interpreter
 
-@st.cache_data
-def load_label_map():
-    with open("model/label_map.pkl", "rb") as f:
-        return pickle.load(f)
+# Fungsi preprocessing gambar
+def preprocess_image(image):
+    image = image.resize((224, 224))
+    image_array = np.array(image) / 255.0
+    return image_array.astype(np.float32).reshape(1, 224, 224, 3)
 
-interpreter = load_model()
-label_map = load_label_map()
-label_inv_map = {v: k for k, v in label_map.items()}
-
-# === LABEL NORMALISASI === #
-label_mapping = {
-    "retina_desiese": "retina disease",
-    "retina disease": "retina disease",
-    "retinadesiese": "retina disease",
-    "retina_disease": "retina disease",
-    "cataract": "cataract",
-    "catarak": "cataract",
-    "katarak": "cataract",
-    "glaucoma": "glaucoma",
-    "glaukoma": "glaucoma",
-    "normal": "normal",
-    "mata normal": "normal"
-}
-
-# === REKOMENDASI PER PENYAKIT === #
-rekomendasi = {
-    "cataract": "Mata terdeteksi cataract.\n- Gunakan kacamata untuk membantu penglihatan sementara.\n- Hindari cahaya terang.\n- Pertimbangkan operasi katarak.\n- Konsultasi rutin ke dokter mata.",
-    "glaucoma": "Mata terdeteksi glaucoma.\n- Konsultasi ke dokter mata.\n- Gunakan obat tetes secara rutin.\n- Hindari stres.\n- Pemeriksaan rutin diperlukan.",
-    "retina disease": "Mata terdeteksi penyakit retina.\n- Segera periksa ke dokter retina.\n- Disarankan OCT atau angiografi retina.\n- Bisa membutuhkan laser/injeksi/operasi.\n- Deteksi dini penting.",
-    "normal": "Mata dalam kondisi normal.\n- Jaga pola hidup sehat.\n- Terapkan aturan 20-20-20 saat layar.\n- Konsumsi vitamin A, C, E.\n- Rutin periksa mata setiap 6–12 bulan."
-}
-
-# === CLEAN PDF TEXT === #
-def clean_text_for_pdf(text):
-    replacements = {"–": "-", "—": "-", "“": '"', "”": '"', "‘": "'", "’": "'", "•": "-", "\u202f": " "}
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    return text.encode("latin-1", "ignore").decode("latin-1")
-
-# === PREDIKSI DARI TFLITE === #
-def predict_image(img):
+# Fungsi prediksi
+def predict_image(interpreter, image):
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
-
-    img = img.resize((224, 224))
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-
-    interpreter.set_tensor(input_details[0]['index'], img_array)
+    interpreter.set_tensor(input_details[0]['index'], image)
     interpreter.invoke()
     output_data = interpreter.get_tensor(output_details[0]['index'])
+    prediction = np.argmax(output_data)
+    confidence = float(np.max(output_data))
+    return prediction, confidence
 
-    class_index = np.argmax(output_data[0])
-    confidence = float(output_data[0][class_index])
-    return label_inv_map[class_index], confidence
+# Fungsi klasifikasi label
+def get_class_name(pred):
+    classes = ['Cataract', 'Diabetic Retinopathy', 'Glaucoma', 'Normal']
+    return classes[pred]
 
-# === GENERATE PDF === #
-def generate_pdf(label, confidence, rekom, img):
-    rekom_clean = clean_text_for_pdf(rekom)
-    label_clean = clean_text_for_pdf(label)
-    img_path = "gambar_uploaded.jpg"
-    img.save(img_path)
-
+# Fungsi membuat laporan PDF
+def generate_pdf(image, result_text):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
-    pdf.set_font_size(16)
     pdf.cell(200, 10, txt="Hasil Deteksi Penyakit Mata", ln=True, align='C')
     pdf.ln(10)
-    pdf.image(img_path, x=30, y=40, w=150)
-    pdf.ln(100)
-    pdf.set_font_size(12)
-    pdf.multi_cell(0, 10, f"Hasil Deteksi: {label_clean}\nKeyakinan: {confidence:.2f}%\n\nRekomendasi:\n{rekom_clean}")
-    pdf.output("hasil_deteksi.pdf")
 
-# === SIMPAN RIWAYAT === #
-def simpan_riwayat(email, label, confidence):
-    waktu = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    df = pd.DataFrame([[email, label, confidence, waktu]], columns=["Email", "Label", "Confidence", "Waktu"])
-    if os.path.exists("riwayat.csv"):
-        df.to_csv("riwayat.csv", mode='a', index=False, header=False)
-    else:
-        df.to_csv("riwayat.csv", index=False)
+    image_path = "temp_image.jpg"
+    image.save(image_path)
+    pdf.image(image_path, x=60, y=30, w=90)
+    pdf.ln(85)
 
-def reset_riwayat():
-    if os.path.exists("riwayat.csv"):
-        os.remove("riwayat.csv")
-        st.success("✅ Riwayat berhasil dihapus.")
-    else:
-        st.info("ℹ️ Tidak ada data riwayat yang bisa dihapus.")
+    pdf.multi_cell(0, 10, txt=result_text)
+    os.remove(image_path)
 
-# === SIDEBAR MENU === #
-with st.sidebar:
-    menu = option_menu("Menu", ["Deteksi Mata", "Riwayat Deteksi"], icons=["eye", "clock-history"], menu_icon="cast", default_index=0)
+    pdf_output = "hasil_deteksi.pdf"
+    pdf.output(pdf_output)
+    return pdf_output
 
-if menu == "Deteksi Mata":
-    st.markdown("<h1 style='text-align:center;'>🔬 Aplikasi Deteksi Penyakit Mata</h1>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("📤 Upload Gambar Mata", type=["jpg", "jpeg", "png"])
+# Fungsi kirim email
+def send_email(receiver_email, attachment_path):
+    try:
+        yag = yagmail.SMTP(user=os.environ.get("EMAIL_USER"), password=os.environ.get("EMAIL_PASS"))
+        yag.send(
+            to=receiver_email,
+            subject="Hasil Deteksi Penyakit Mata",
+            contents="Berikut terlampir hasil deteksi dari aplikasi.",
+            attachments=attachment_path,
+        )
+        return True
+    except Exception as e:
+        st.error(f"Email gagal dikirim: {e}")
+        return False
 
-    if uploaded_file:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="🖼️ Gambar yang Diunggah", use_container_width=True)
+# UI
+def main():
+    st.set_page_config(page_title="Deteksi Penyakit Mata", layout="centered")
 
-        with st.spinner("⏳ Sedang memproses..."):
-            time.sleep(1)
-            label, confidence = predict_image(image)
-            confidence_percent = confidence * 100
-            standard_label = label_mapping.get(label.lower().strip(), "unknown")
-            rekom = rekomendasi.get(standard_label, "- Rekomendasi tidak tersedia.\n- Silakan konsultasi ke dokter mata.")
-            rekom_html = rekom.replace("\n", "<br>")
+    with st.sidebar:
+        selected = option_menu(
+            "Menu",
+            ["Beranda", "Deteksi", "Tentang"],
+            icons=["house", "activity", "info-circle"],
+            menu_icon="cast",
+            default_index=0,
+        )
 
-        st.markdown(f"""
-        <table class="custom-table">
-            <tr><th>🔍 Deteksi</th><td><b>{label}</b></td></tr>
-            <tr><th>📊 Keyakinan</th><td>{confidence_percent:.2f}%</td></tr>
-            <tr><th>🩺 Rekomendasi</th><td>{rekom_html}</td></tr>
-        </table>
-        """, unsafe_allow_html=True)
+    if selected == "Beranda":
+        st.title("Selamat datang di Aplikasi Deteksi Penyakit Mata")
+        st.write("Aplikasi ini menggunakan model pembelajaran mesin untuk mendeteksi jenis penyakit mata dari gambar retina.")
+        st.image("assets/eye.jpg", use_column_width=True)
 
-        st.caption(f"🧪 Label asli dari model: {label} → Mapping ke: {standard_label}")
-        generate_pdf(label, confidence_percent, rekom, image)
-        with open("hasil_deteksi.pdf", "rb") as f:
-            st.download_button("📄 Unduh PDF", f, file_name="hasil_deteksi.pdf", mime="application/pdf")
+    elif selected == "Deteksi":
+        st.title("Deteksi Penyakit Mata")
+        uploaded_file = st.file_uploader("Unggah gambar retina", type=["jpg", "png", "jpeg"])
 
-        email_input = st.text_input("📧 Masukkan Email untuk Kirim Hasil:")
-        if st.button("Kirim Email"):
-            if email_input:
-                try:
-                    yag = yagmail.SMTP("ruthoktatambunan@gmail.com", "ybzu tmnz tyqb twoj")
-                    yag.send(to=email_input, subject="Hasil Deteksi Penyakit Mata", contents="Berikut terlampir hasil deteksi mata Anda.", attachments="hasil_deteksi.pdf")
-                    simpan_riwayat(email_input, label, confidence_percent)
-                    st.success("✅ Email dan riwayat berhasil disimpan.")
-                except Exception as e:
-                    st.error(f"❌ Gagal mengirim email: {e}")
-            else:
-                st.warning("⚠️ Masukkan alamat email terlebih dahulu.")
+        if uploaded_file:
+            image = Image.open(uploaded_file).convert("RGB")
+            st.image(image, caption="Gambar yang diunggah", use_column_width=True)
 
-        st.subheader("🔗 Bagikan ke Media Sosial")
-        share_text = f"Hasil deteksi: {label} ({confidence_percent:.2f}%)"
-        share_url = "https://github.com/Ruthtambunan/Aplikasi_deteksi_penyakit_mata"
-        st.markdown(f'''
-        - [💬 WhatsApp](https://wa.me/?text={share_text} - {share_url})
-        - [📘 Facebook](https://www.facebook.com/sharer/sharer.php?u={share_url})
-        - [🐦 Twitter](https://twitter.com/intent/tweet?text={share_text}&url={share_url})
-        ''')
+            model = load_model()
+            processed = preprocess_image(image)
+            pred_class, confidence = predict_image(model, processed)
+            class_name = get_class_name(pred_class)
 
-elif menu == "Riwayat Deteksi":
-    st.subheader("📜 Riwayat Deteksi Anda")
-    if os.path.exists("riwayat.csv"):
-        df = pd.read_csv("riwayat.csv", names=["Email", "Label", "Confidence", "Waktu"], header=None)
-        st.dataframe(df.sort_values(by="Waktu", ascending=False))
-        if st.button("🗑️ Hapus Semua Riwayat"):
-            reset_riwayat()
-    else:
-        st.info("Belum ada data riwayat.")
+            st.success(f"Hasil Deteksi: **{class_name}**")
+            st.info(f"Akurasi Prediksi: {confidence * 100:.2f}%")
+
+            now = datetime.datetime.now()
+            result_text = f"""
+            Hasil Deteksi Penyakit Mata
+            ============================
+            Tanggal: {now.strftime('%d-%m-%Y %H:%M:%S')}
+            Hasil: {class_name}
+            Akurasi: {confidence * 100:.2f}%
+            """
+
+            st.text_area("Ringkasan Hasil:", result_text, height=200)
+
+            if st.button("Unduh Laporan PDF"):
+                pdf_path = generate_pdf(image, result_text)
+                with open(pdf_path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                    href = f'<a href="data:application/octet-stream;base64,{b64}" download="{pdf_path}">Klik di sini untuk mengunduh laporan</a>'
+                    st.markdown(href, unsafe_allow_html=True)
+
+            email_input = st.text_input("Kirim hasil ke email (opsional):")
+            if email_input and st.button("Kirim Email"):
+                pdf_path = generate_pdf(image, result_text)
+                if send_email(email_input, pdf_path):
+                    st.success("Email berhasil dikirim.")
+
+    elif selected == "Tentang":
+        st.title("Tentang Aplikasi")
+        st.markdown("""
+        Aplikasi ini dikembangkan untuk membantu deteksi dini penyakit mata seperti:
+        - Katarak
+        - Glaukoma
+        - Retinopati Diabetik
+
+        Dibuat menggunakan:
+        - Streamlit
+        - TensorFlow Lite
+        - Model klasifikasi citra
+
+        Kontak: developer@example.com
+        """)
+
+if __name__ == "__main__":
+    main()
