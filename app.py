@@ -1,16 +1,4 @@
-# === STRUKTUR FOLDER YANG VALID UNTUK STREAMLIT CLOUD ===
-
-# project-root/
-# ├── app.py
-# ├── requirements.txt
-# ├── label_map.pkl
-# └── tflite_model/
-#     └── eye_disease_model.tflite
-
-# PASTIKAN FILE INI (app.py) DI ROOT DAN TFLITE FILE ADA DI FOLDER `tflite_model`.
-
 import streamlit as st
-import tensorflow as tf
 import numpy as np
 import pickle
 from PIL import Image
@@ -21,8 +9,10 @@ import os
 import pandas as pd
 from datetime import datetime
 import base64
+import tflite_runtime.interpreter as tflite
 from streamlit_option_menu import option_menu
 
+# === KONFIGURASI HALAMAN === #
 st.set_page_config(page_title="Deteksi Penyakit Mata", layout="centered", page_icon="👁️")
 st.markdown("""
     <style>
@@ -32,21 +22,23 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# === LOAD MODEL TFLITE === #
 @st.cache_resource
-def load_tflite_model():
-    interpreter = tf.lite.Interpreter(model_path="tflite_model/eye_disease_model.tflite")
+def load_model():
+    interpreter = tflite.Interpreter(model_path="model/model.tflite")
     interpreter.allocate_tensors()
     return interpreter
 
 @st.cache_data
 def load_label_map():
-    with open("label_map.pkl", "rb") as f:
+    with open("model/label_map.pkl", "rb") as f:
         return pickle.load(f)
 
-interpreter = load_tflite_model()
+interpreter = load_model()
 label_map = load_label_map()
 label_inv_map = {v: k for k, v in label_map.items()}
 
+# === LABEL NORMALISASI === #
 label_mapping = {
     "retina_desiese": "retina disease",
     "retina disease": "retina disease",
@@ -61,37 +53,45 @@ label_mapping = {
     "mata normal": "normal"
 }
 
+# === REKOMENDASI PER PENYAKIT === #
 rekomendasi = {
-    "cataract": "Mata terdeteksi cataract.\n- Gunakan kacamata...",
-    "glaucoma": "Mata terdeteksi glaucoma.\n- Segera konsultasi...",
-    "retina disease": "Mata terdeteksi penyakit retina.\n- Periksakan ke dokter...",
-    "normal": "Mata terdeteksi normal.\n- Jaga kesehatan mata..."
+    "cataract": "Mata terdeteksi cataract.\n- Gunakan kacamata untuk membantu penglihatan sementara.\n- Hindari cahaya terang.\n- Pertimbangkan operasi katarak.\n- Konsultasi rutin ke dokter mata.",
+    "glaucoma": "Mata terdeteksi glaucoma.\n- Konsultasi ke dokter mata.\n- Gunakan obat tetes secara rutin.\n- Hindari stres.\n- Pemeriksaan rutin diperlukan.",
+    "retina disease": "Mata terdeteksi penyakit retina.\n- Segera periksa ke dokter retina.\n- Disarankan OCT atau angiografi retina.\n- Bisa membutuhkan laser/injeksi/operasi.\n- Deteksi dini penting.",
+    "normal": "Mata dalam kondisi normal.\n- Jaga pola hidup sehat.\n- Terapkan aturan 20-20-20 saat layar.\n- Konsumsi vitamin A, C, E.\n- Rutin periksa mata setiap 6–12 bulan."
 }
 
+# === CLEAN PDF TEXT === #
 def clean_text_for_pdf(text):
     replacements = {"–": "-", "—": "-", "“": '"', "”": '"', "‘": "'", "’": "'", "•": "-", "\u202f": " "}
     for old, new in replacements.items():
         text = text.replace(old, new)
     return text.encode("latin-1", "ignore").decode("latin-1")
 
-def predict_image_tflite(interpreter, img):
-    img = img.resize((224, 224))
-    img_array = tf.keras.utils.img_to_array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0).astype("float32")
+# === PREDIKSI DARI TFLITE === #
+def predict_image(img):
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
+
+    img = img.resize((224, 224))
+    img_array = np.array(img, dtype=np.float32) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+
     interpreter.set_tensor(input_details[0]['index'], img_array)
     interpreter.invoke()
-    predictions = interpreter.get_tensor(output_details[0]['index'])[0]
-    class_index = np.argmax(predictions)
-    confidence = predictions[class_index]
+    output_data = interpreter.get_tensor(output_details[0]['index'])
+
+    class_index = np.argmax(output_data[0])
+    confidence = float(output_data[0][class_index])
     return label_inv_map[class_index], confidence
 
+# === GENERATE PDF === #
 def generate_pdf(label, confidence, rekom, img):
     rekom_clean = clean_text_for_pdf(rekom)
     label_clean = clean_text_for_pdf(label)
     img_path = "gambar_uploaded.jpg"
     img.save(img_path)
+
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
@@ -104,6 +104,7 @@ def generate_pdf(label, confidence, rekom, img):
     pdf.multi_cell(0, 10, f"Hasil Deteksi: {label_clean}\nKeyakinan: {confidence:.2f}%\n\nRekomendasi:\n{rekom_clean}")
     pdf.output("hasil_deteksi.pdf")
 
+# === SIMPAN RIWAYAT === #
 def simpan_riwayat(email, label, confidence):
     waktu = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     df = pd.DataFrame([[email, label, confidence, waktu]], columns=["Email", "Label", "Confidence", "Waktu"])
@@ -119,9 +120,9 @@ def reset_riwayat():
     else:
         st.info("ℹ️ Tidak ada data riwayat yang bisa dihapus.")
 
+# === SIDEBAR MENU === #
 with st.sidebar:
-    menu = option_menu("Menu", ["Deteksi Mata", "Riwayat Deteksi"],
-                       icons=["eye", "clock-history"], menu_icon="cast", default_index=0)
+    menu = option_menu("Menu", ["Deteksi Mata", "Riwayat Deteksi"], icons=["eye", "clock-history"], menu_icon="cast", default_index=0)
 
 if menu == "Deteksi Mata":
     st.markdown("<h1 style='text-align:center;'>🔬 Aplikasi Deteksi Penyakit Mata</h1>", unsafe_allow_html=True)
@@ -133,7 +134,7 @@ if menu == "Deteksi Mata":
 
         with st.spinner("⏳ Sedang memproses..."):
             time.sleep(1)
-            label, confidence = predict_image_tflite(interpreter, image)
+            label, confidence = predict_image(image)
             confidence_percent = confidence * 100
             standard_label = label_mapping.get(label.lower().strip(), "unknown")
             rekom = rekomendasi.get(standard_label, "- Rekomendasi tidak tersedia.\n- Silakan konsultasi ke dokter mata.")
@@ -157,12 +158,7 @@ if menu == "Deteksi Mata":
             if email_input:
                 try:
                     yag = yagmail.SMTP("ruthoktatambunan@gmail.com", "ybzu tmnz tyqb twoj")
-                    yag.send(
-                        to=email_input,
-                        subject="Hasil Deteksi Penyakit Mata",
-                        contents="Berikut terlampir hasil deteksi mata Anda.",
-                        attachments="hasil_deteksi.pdf"
-                    )
+                    yag.send(to=email_input, subject="Hasil Deteksi Penyakit Mata", contents="Berikut terlampir hasil deteksi mata Anda.", attachments="hasil_deteksi.pdf")
                     simpan_riwayat(email_input, label, confidence_percent)
                     st.success("✅ Email dan riwayat berhasil disimpan.")
                 except Exception as e:
