@@ -4,5 +4,5 @@ Pillow
 fpdf
 yagmail
 pandas
-tflite-runtime==2.5.0
+tensorflow==2.14.0
 streamlit-option-menu
