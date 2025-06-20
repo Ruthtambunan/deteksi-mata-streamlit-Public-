@@ -1,0 +1,8 @@
+streamlit
+tensorflow
+pillow
+numpy
+fpdf
+yagmail
+pandas
+gdown
