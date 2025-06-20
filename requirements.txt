@@ -1,8 +1,9 @@
 streamlit==1.25.0
 numpy==1.23.5
 Pillow==9.5.0
-fpdf==1.7.2
+tflite-runtime==2.11.0
+matplotlib==3.7.1
+reportlab==4.0.4
 yagmail==0.15.293
-pandas==1.5.3
-tflite-runtime==2.5.0
-streamlit-option-menu==0.3.6
+gspread==5.11.1
+oauth2client==4.1.3
